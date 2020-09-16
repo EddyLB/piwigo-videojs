@@ -1,7 +1,7 @@
 <?php
 /*
 Plugin Name: VideoJS
-Version: 2.8.b
+Version: 2.9.b
 Description: videojs integration for piwigo
 Plugin URI: http://piwigo.org/ext/extension_view.php?eid=610
 Author: xbmgsharp
@@ -28,6 +28,7 @@ $vjs_extensions = array(
 	'm4v',
 	'webm',
 	'webmv',
+	'strm',
 );
 $conf['file_ext'] = array_merge ($conf['file_ext'], $vjs_extensions, array_map('strtoupper', $vjs_extensions) );
 
@@ -53,7 +54,7 @@ if (defined('IN_ADMIN')) {
 
 function vjs_format_exif_data($exif, $filename, $map)
 {
-	global $conf, $picture;
+	global $conf, $picture, $prefixeTable;
 
 	//print_r( $picture['current']);
 	// do nothing if the current picture is actually an image !
@@ -66,73 +67,31 @@ function vjs_format_exif_data($exif, $filename, $map)
 		return $exif;
 	}
 
-	// Fetch metdata configuration
-	$metadata = isset($conf['vjs_conf']['metadata']) ? $conf['vjs_conf']['metadata'] : true;
-	if ($metadata == false)
-	{
-		return $exif;
-	}
-
 	// In case it is not an image but not a supported video file by the plugin
 	if (vjs_valid_extension(get_extension($picture['current']['path'])) === false)
 	{
 		return $exif;
 	}
 
-	// If video, let's check
-	//print $filename."\n";
+	// If video, fetch sql metadata
+	//print_r($picture)."\n<br/>\n";
 	//print_r($exif)."\n<br/>\n";
 	//print_r($map)."\n<br/>\n";
-	$filename=$picture['current']['path'];
-	// TODO read from DB, instead of reading live MediaInfo result
-	// Generate default value
-	$sync_options = array(
-		'mediainfo'        => 'mediainfo',
-		'ffmpeg'           => 'ffmpeg',
-		'metadata'         => true,
-		'poster'           => true,
-		'postersec'        => 4,
-		'output'           => 'jpg',
-		'posteroverlay'    => false,
-		'posteroverwrite'  => true,
-		'thumb'            => false,
-		'thumbsec'         => 5,
-		'thumbsize'        => "120x68",
-		'simulate'         => true,
-		'cat_id'           => 0,
-		'subcats_included' => true,
-	);
-	// Override default value from configuration
-	if (isset($conf['vjs_sync']))
+	/* Use our own metadata sql table */
+	$query = "SELECT * FROM ".$prefixeTable."image_videojs WHERE `id`=".$picture['current']['id'].";";
+	$result = pwg_query($query);
+	$videojs_metadata = pwg_db_fetch_assoc($result);
+	if (is_array($exif) and isset($videojs_metadata) and is_array($videojs_metadata) and isset($videojs_metadata['metadata']))
 	{
-	    $sync_options = unserialize($conf['vjs_sync']);
-	}
-	// Do the Check dependencies, MediaInfo & FFMPEG, share with batch manager & photo edit & admin sync
-	require_once(dirname(__FILE__).'/include/function_dependencies.php');
-	require_once(dirname(__FILE__).'/include/mediainfo.php');
-	if (isset($exif) and ($exif != null) and isset($general))
-	{
-		// Replace some value by human readable string
-		if (isset($general->FileSize_String))
-		{
-			$exif['filesize'] = (string)$general->FileSize_String;
-		}
-		if (isset($general->Duration_String))
-		{
-			$exif['duration'] = (string)$general->Duration_String;
-		}
-		if (isset($video->BitRate_String))
-		{
-			$exif['bitrate'] = (string)$video->BitRate_String;
-		}
-		if (isset($audio->SamplingRate_String))
-		{
-			$exif['sampling_rate'] = (string)$audio->SamplingRate_String;
-		}
+		$video_metadata = unserialize($videojs_metadata['metadata']);
+		//print_r($video_metadata);
+		$exif = array_merge($exif, $video_metadata);
+		// Add some value by human readable string
 		if (isset($exif['width']) and isset($exif['height']))
 		{
 			$exif['resolution'] = $exif['width'] ."x". $exif['height'];
 		}
+		include_once(PHPWG_ROOT_PATH.'admin/include/image.class.php');
 		isset($exif['rotation']) and $exif['rotation'] = pwg_image::get_rotation_angle_from_code($exif['rotation']) ."°";
 		ksort($exif);
 	}
@@ -151,7 +110,7 @@ function vjs_render_media($content, $picture)
 {
 	global $template, $picture, $page, $conf, $user, $refresh;
 
-	//print_r( $picture['current']);
+	//print_r($picture['current']);
 	// do nothing if the current picture is actually an image !
 	if ( (array_key_exists('src_image', @$picture['current'])
 		&& @$picture['current']['src_image']->is_original()) )
@@ -224,7 +183,7 @@ function vjs_render_media($content, $picture)
 	$controls = isset($conf['vjs_conf']['controls']) ? strbool($conf['vjs_conf']['controls']) : false;
 	$volume = isset($conf['vjs_conf']['volume']) ? $conf['vjs_conf']['volume'] : '1';
 	$language = isset($conf['vjs_conf']['language']) ? $conf['vjs_conf']['language'] : 'en';
-	$player = isset($conf['vjs_conf']['player']) ? $conf['vjs_conf']['player'] : 'vjs-player.tpl.v5';
+	$player = isset($conf['vjs_conf']['player']) ? $conf['vjs_conf']['player'] : 'vjs-5-player.tpl';
 
 	// Slideshow : The video needs to be launch automatically in
 	// slideshow mode. The refresh of the page is set to the
@@ -245,6 +204,8 @@ function vjs_render_media($content, $picture)
 	);
 	$skincss = $available_skins[$skin];
 
+	// read strm and return HLS playlist
+	$strm = vjs_read_strm($picture['current']['path']);
 	// Guess the poster extension
 	$file_wo_ext = pathinfo($picture['current']['path']);
 	$file_dir = dirname($picture['current']['path']);
@@ -256,9 +217,9 @@ function vjs_render_media($content, $picture)
 	$files_ext = array_merge(array(), $vjs_extensions, array_map('strtoupper', $vjs_extensions) );
 	// Add the current file in array
 	$videos[] = array(
-				'src' => embellish_url($picture['current']['element_url']),
+				'src' => $strm ? $strm : embellish_url($picture['current']['element_url']),
 				'ext' => $extension,
-        'resolution' => 'SD',
+				'resolution' => 'SD',
 			);
 	// Add any other video source format
 	foreach ($files_ext as $file_ext) {
@@ -283,7 +244,7 @@ function vjs_render_media($content, $picture)
     // ...
     $sd_video_ext = get_extension($picture['current']['path']);
     $hd_video_ext = 'hd.'.$sd_video_ext;
-    
+
     $query = '
 SELECT *
   FROM '.IMAGE_FORMAT_TABLE.'
@@ -291,7 +252,7 @@ SELECT *
     AND ext = \''.$hd_video_ext.'\'
 ;';
     $formats = query2array($query);
-    
+
     if (count($formats) == 1)
     {
       $videos[] = array (
@@ -301,7 +262,7 @@ SELECT *
         );
     }
   }
-  
+
 	//print_r($videos);
 	// Sort array to have MP4 first in the source list for iOS support
 	foreach ($videos as $key => $row) {
@@ -449,7 +410,7 @@ SELECT *
 
 function vjs_get_mimetype_icon($location, $element_info)
 {
-	if (in_array($element_info, array('ogg', 'ogv', 'mp4', 'm4v', 'webm', 'webmv')))
+	if (in_array($element_info, array('ogg', 'ogv', 'mp4', 'm4v', 'webm', 'webmv', 'strm')))
 	{
 		$location = 'plugins/'
 			. basename(dirname(__FILE__))
@@ -480,7 +441,8 @@ function vjs_get_mimetype_from_ext($file_ext)
 			'mp4'   => 'video/mp4',
 			'm4v'   => 'video/mp4',
 			'webm'  => 'video/webm',
-			'webmv' => 'video/webm'
+			'webmv' => 'video/webm',
+			'strm'  => 'application/x-mpegURL'
 			);
 	return $vjs_types[strtolower($file_ext)];
 }
@@ -493,8 +455,23 @@ function vjs_valid_extension($file_ext)
 			'mp4'   => 'video/mp4',
 			'm4v'   => 'video/mp4',
 			'webm'  => 'video/webm',
-			'webmv' => 'video/webm'
+			'webmv' => 'video/webm',
+			'strm'  => 'video/live'
 			);
 	return array_key_exists(strtolower($file_ext), $vjs_types) ? true : false;
+}
+
+function vjs_read_strm($image)
+{
+	if (get_extension($image) == 'strm')
+	{
+		$strmfile = fopen($image, "r") or die("Unable to open strm file!");
+		$hlsfile = fgets($strmfile);
+		$hlsfile = str_replace(array("\r", "\n", " "), "", $hlsfile);
+		fclose($strmfile);
+		if (parse_url($hlsfile))
+			return $hlsfile;
+	}
+	return false;
 }
 ?>

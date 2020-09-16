@@ -31,6 +31,8 @@ if (!defined('PHPWG_ROOT_PATH')) die('Hacking attempt!');
 $sync_options = array(
     'mediainfo'         => 'mediainfo',
     'ffmpeg'            => 'ffmpeg',
+    'exiftool'          => 'exiftool',
+    'ffprobe'           => 'ffprobe',
     'metadata'          => true,
     'poster'            => true,
     'postersec'         => 4,
@@ -45,17 +47,10 @@ $sync_options = array(
     'subcats_included'  => true,
 );
 
-// Override default value from configuration
-if (isset($conf['vjs_sync']))
+if ( isset($_POST['submit']) and isset($_POST['postersec']) )
 {
-    $sync_options = unserialize($conf['vjs_sync']);
-}
-
-if(isset($_POST['mediainfo']) && isset($_POST['ffmpeg'])) {
     // Override default value from the form
-    $sync_options = array(
-		'mediainfo'         => $_POST['mediainfo'],
-		'ffmpeg'            => $_POST['ffmpeg'],
+    $sync_options_form = array(
         'metadata'          => isset($_POST['metadata']),
         'poster'            => isset($_POST['poster']),
         'postersec'         => $_POST['postersec'],
@@ -70,64 +65,9 @@ if(isset($_POST['mediainfo']) && isset($_POST['ffmpeg'])) {
         'subcats_included'  => isset($_POST['subcats_included']),
     );
 
-    // Update config to DB
-    conf_update_param('vjs_sync', serialize($sync_options));
-}
+    // Merge default value with user configuration
+    $sync_options = array_merge($sync_options, $sync_options_form);
 
-// Check dependencies
-$warnings = array();
-
-// Do the dependencies checks for MediaInfo & FFMPEG
-function check_mediainfo($sync_options)
-{
-    $retval = 0;
-    if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
-        system($sync_options['mediainfo'] ." >NUL 2>NUL", $retval); // redirect any output
-    } else {
-        system($sync_options['mediainfo'] ." 1>&2 /dev/null", $retval); // redirect any output
-    }
-    if($retval == 127 or $retval == 9009) // Linux or windows exit code for command not found.
-    {
-        return false;
-    } else {
-        return true;
-    }
-}
-
-function check_ffmpeg($sync_options)
-{
-    $retval = 0;
-    if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
-        system($sync_options['ffmpeg'] ." >NUL 2>NUL", $retval); // redirect any output
-    } else {
-        system($sync_options['ffmpeg'] ." 1>&2 /dev/null", $retval); // redirect any output
-    }
-    if($retval == 127 or $retval == 9009) // Linux or windows exit code for command not found.
-    {
-        return false;
-    } else {
-        return true;
-    }
-}
-
-if (!check_mediainfo($sync_options))
-{
-    $warnings[] = "Metadata parsing disable because MediaInfo is not installed on the system, eg: '/usr/bin/mediainfo'.";
-    $sync_options['metadata'] = false;
-}
-
-if (!check_ffmpeg($sync_options))
-{
-    $warnings[] = "Poster and Thumbnail creation disable because FFmpeg is not installed on the system, eg: '/usr/bin/ffmpeg'.";
-    $sync_options['poster'] = false;
-    $sync_options['thumb'] = false;
-}
-
-$template->assign('sync_warnings', $warnings);
-$template->assign($sync_options); // send config value to template
-
-if ( isset($_POST['submit']) and isset($_POST['postersec']) )
-{
     // Filter on existing poster
     $OVERWRITE = "";
     if (!$sync_options['posteroverwrite'])
@@ -166,7 +106,9 @@ if ( isset($_POST['submit']) and isset($_POST['postersec']) )
     // Send sync result to template
     $template->assign('sync_errors', $errors );
     $template->assign('sync_warnings', $warnings );
-    $template->assign('sync_infos', $infos );
+    if (isset($sync_infos)) {
+	$template->assign('sync_infos', $sync_infos );
+    }
 
     // Send result to templates
     $template->assign(
@@ -180,6 +122,9 @@ if ( isset($_POST['submit']) and isset($_POST['postersec']) )
             'NB_WARNINGS'               => count($warnings),
     ));
 }
+
+// Send user options result to template
+$template->assign($sync_options);
 
 /* Get statistics */
 // All videos with supported extensions by VideoJS

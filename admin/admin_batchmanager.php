@@ -63,12 +63,12 @@ function vjs_loc_end_element_set_global()
 	global $template;
 	$template->append('element_set_global_plugins_actions',
 		array('ID' => 'videojs', 'NAME'=>l10n('Videos'), 'CONTENT' => '
-    <legend>Synchronize metadata</legend>
+    <legend>Metadata</legend>
     <ul>
       <li>
 	<label><input type="checkbox" name="vjs_metadata" value="1" checked="checked" /> filesize, width, height, latitude, longitude, date_creation, rotation</label>
 	<br/><small>Will overwrite the information in the database with the metadata from the video.</small>
-	<br/><small><strong>Require <a href="https://github.com/xbgmsharp/piwigo-videojs/wiki/How-to-add-videos#external-tools" target="_blank">\'MediaInfo\'</a> to be install.</strong></small>
+	<br/><small><strong>Require <a href="https://github.com/xbgmsharp/piwigo-videojs/wiki/How-to-add-videos#external-tools" target="_blank">\'MediaInfo\' or \'ffprobe\' or \'Exiftool\'</a> to be install.</strong></small>
       </li>
     </ul>
     <legend>Poster</legend>
@@ -119,29 +119,53 @@ function vjs_element_set_global_action($action, $collection)
 	if ($action!=="videojs")
 		return;
 
-	global $page, $conf;
+	global $page, $conf, $prefixeTable;
 
 	$query = "SELECT `id`, `file`, `path`
 			FROM ".IMAGES_TABLE."
 			WHERE id IN (".implode(',',$collection).")";
 
-	// Override default value from the form
-	$sync_options_form = array(
-	    'metadata'          => isset($_POST['vjs_metadata']),
-	    'poster'            => isset($_POST['vjs_poster']),
-	    'postersec'         => $_POST['vjs_postersec'],
-	    'output'            => $_POST['vjs_output'],
-	    'posteroverlay'     => isset($_POST['vjs_posteroverlay']),
-	    'posteroverwrite'   => isset($_POST['vjs_posteroverwrite']),
-	    'thumb'             => isset($_POST['vjs_thumb']),
-	    'thumbsec'          => $_POST['vjs_thumbsec'],
-	    'thumbsize'         => $_POST['vjs_thumbsize'],
-	    'simulate'          => false,
-	    'batch_manager'     => true,
+	// Generate default value
+	$sync_options = array(
+	    'mediainfo'         => 'mediainfo',
+	    'ffmpeg'            => 'ffmpeg',
+	    'exiftool'          => 'exiftool',
+	    'ffprobe'           => 'ffprobe',
+	    'metadata'          => true,
+	    'poster'            => true,
+	    'postersec'         => 4,
+	    'output'            => 'jpg',
+	    'posteroverlay'     => false,
+	    'posteroverwrite'   => true,
+	    'thumb'             => false,
+	    'thumbsec'          => 5,
+	    'thumbsize'         => "120x68",
+	    'simulate'          => true,
+	    'cat_id'            => 0,
+	    'subcats_included'  => true,
 	);
-	$sync_options = array_merge(unserialize($conf['vjs_sync']), $sync_options_form);
 
-	// Do the work, share with batch manager
+	if(isset($_POST['submit']))
+	{
+	    // Override default value from the form
+	    $sync_options_form = array(
+	        'metadata'          => isset($_POST['vjs_metadata']),
+	        'poster'            => isset($_POST['vjs_poster']),
+	        'postersec'         => $_POST['vjs_postersec'],
+	        'output'            => $_POST['vjs_output'],
+	        'posteroverlay'     => isset($_POST['vjs_posteroverlay']),
+	        'posteroverwrite'   => isset($_POST['vjs_posteroverwrite']),
+	        'thumb'             => isset($_POST['vjs_thumb']),
+	        'thumbsec'          => $_POST['vjs_thumbsec'],
+	        'thumbsize'         => $_POST['vjs_thumbsize'],
+	        'simulate'          => false,
+	    );
+
+	    // Merge default value with user data from the form
+	    $sync_options = array_merge($sync_options, $sync_options_form);
+	}
+
+	// Do the work, share with admin sync and photo
 	require_once(dirname(__FILE__).'/../include/function_sync2.php');
 
 	$page['errors'] = $errors;
@@ -156,7 +180,27 @@ function vjs_loc_begin_element_set_unit()
 	if (!isset($_POST['submit']))
 	      return;
 
-	global $page, $conf;
+	global $page, $conf, $prefixeTable;
+
+	// Generate default value
+	$sync_options = array(
+	    'mediainfo'         => 'mediainfo',
+	    'ffmpeg'            => 'ffmpeg',
+	    'exiftool'          => 'exiftool',
+	    'ffprobe'           => 'ffprobe',
+	    'metadata'          => true,
+	    'poster'            => true,
+	    'postersec'         => 4,
+	    'output'            => 'jpg',
+	    'posteroverlay'     => false,
+	    'posteroverwrite'   => true,
+	    'thumb'             => false,
+	    'thumbsec'          => 5,
+	    'thumbsize'         => "120x68",
+	    'simulate'          => true,
+	    'cat_id'            => 0,
+	    'subcats_included'  => true,
+	);
 
 	$collection = explode(',', $_POST['element_ids']);
 	foreach ($collection as $id)
@@ -176,16 +220,16 @@ function vjs_loc_begin_element_set_unit()
 		    'thumbsec'          => $_POST['vjs_thumbsec-'.$id],
 		    'thumbsize'         => $_POST['vjs_thumbsize-'.$id],
 		    'simulate'          => false,
-		    'batch_manager'     => true,
 		);
 
-		$sync_options = array_merge(unserialize($conf['vjs_sync']), $sync_options_form);
+		// Merge default value with user data from the form
+		$sync_options = array_merge($sync_options, $sync_options_form);
 
 		$query = "SELECT `id`, `file`, `path`
 				FROM ".IMAGES_TABLE."
 				WHERE `id`='".$id."';";
 
-		// Do the work, share with batch manager
+		// Do the work, share with admin sync and photo
 		include(dirname(__FILE__).'/../include/function_sync2.php');
 
 		$page['errors'] = array_merge($page['errors'], $errors);
@@ -217,12 +261,12 @@ function vjs_prefilter_batch_manager_unit($content)
 	{
 		$add = '<tr><td><strong>{\'VideoJS\'|@translate}</strong></td>
 		  <td style="border: 2px solid rgb(221, 221, 221);">
-    <legend>Synchronize metadata</legend>
+    <legend>Metadata</legend>
     <ul>
       <li>
 	<label><input type="checkbox" name="vjs_metadata-{$element.id}" value="1"/> filesize, width, height, latitude, longitude, date_creation, rotation</label>
 	<br/><small>Will overwrite the information in the database with the metadata from the video.</small>
-	<br/><small><strong>Require <a href="https://github.com/xbgmsharp/piwigo-videojs/wiki/How-to-add-videos#external-tools" target="_blank">\'MediaInfo\'</a> to be install.</strong></small>
+	<br/><small><strong>Require <a href="https://github.com/xbgmsharp/piwigo-videojs/wiki/How-to-add-videos#external-tools" target="_blank">\'MediaInfo\' or \'ffprobe\' or \'Exiftool\'</a> to be install.</strong></small>
       </li>
     </ul>
     <legend>Poster</legend>

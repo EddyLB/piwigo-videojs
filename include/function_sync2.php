@@ -47,7 +47,9 @@ $thumbs = 0;
 
 // Do the Check dependencies, MediaInfo & FFMPEG, share with batch manager & photo edit & admin sync
 include("function_dependencies.php");
+
 //print_r($sync_options);
+//print_r($sync_binaries);
 if (!$sync_options['metadata'] and !$sync_options['poster'] and !$sync_options['thumb'])
 {
     $errors[] = "You ask me to do nothing, are you sure?";
@@ -75,7 +77,9 @@ while ($row = pwg_db_fetch_assoc($result))
         $exif = array();
         if ($sync_options['metadata'])
         {
-            include("mediainfo.php");
+            if (isset($sync_options['mediainfo']) and $sync_options['mediainfo']) { include('mediainfo.php'); }
+            if (isset($sync_options['exiftool']) and $sync_options['exiftool']) { include('exiftool.php'); }
+            if (isset($sync_options['ffprobe']) and $sync_options['ffprobe']) { include('ffprobe.php'); }
         }
         //print_r($exif);
         if (isset($exif) and $sync_options['metadata'])
@@ -88,9 +92,10 @@ while ($row = pwg_db_fetch_assoc($result))
 			else if (!empty($exif) and count($exif) > 0)
 			{
 				$metadata++;
-				isset($sync_options['batch_manager']) and $infos[] = $filename. ' metadata: '.vjs_pprint_r($exif);
-				//$infos[] = $filename. ' metadata: '.count($exif);
-				$sync_arr['metadata'] = count($exif)." ".vjs_pprint_r($exif);
+				/* Report it */
+				$infos[] = $filename. ' metadata: '.count($exif).' '.vjs_pprint_r($exif);
+				$sync_arr['metadata'] = count($exif).' '.vjs_pprint_r($exif);
+				/* Save metadata */
 				if ($sync_options['metadata'] and !$sync_options['simulate'])
 				{
 					$dbfields = explode(",", "filesize,width,height,latitude,longitude,date_creation,rotation");
@@ -98,15 +103,34 @@ while ($row = pwg_db_fetch_assoc($result))
 					//print $query;
 					pwg_query($query);
 
-					/* At some point we use our own table */
-					//$json = json_encode($xml); /* convert XML to JSON */
-					//$all_array = json_decode($json,TRUE); /*  Merge all general/video/audio in one array to remove duplicate entry */
-					//$merge_arr = array_merge($all_array['File']['track'][2], $all_array['File']['track'][1], $all_array['File']['track'][0]);
-					//$query = "UPDATE '".$prefixeTable."image_videojs' SET metadata=".serialize($merge_arr).", `date_metadata_update`=CURDATE() WHERE `id`=".$row['id'].";";
-					//pwg_query($query);
+					/* Use our own metadata sql table */
+					$query = "INSERT INTO ".$prefixeTable."image_videojs (metadata,date_metadata_update,id) VALUES ('".serialize($exif)."',CURDATE(),'".$row['id']."') ON DUPLICATE KEY UPDATE metadata='".serialize($exif)."',date_metadata_update=CURDATE(),id='".$row['id']."';";
+					pwg_query($query);
 				}
 			}
         }
+
+	/* If we don't parse metadata, fetch them from the db */
+	/* as we need $exif['playtime_seconds'] */
+	if (isset($exif) and !$sync_options['metadata'])
+	{
+		$infos[] = $filename. ' metadata fetch from the db.';
+		$sync_arr['metadata'] = ' fetch from the db.';
+		$query = "SELECT * FROM ".$prefixeTable."image_videojs WHERE `id`=".$row['id'].";";
+		$sql_metadata = pwg_query($query);
+		$videojs_metadata = pwg_db_fetch_assoc($sql_metadata);
+		if (is_array($exif) and isset($videojs_metadata) and is_array($videojs_metadata) and isset($videojs_metadata['metadata']))
+		{
+			$video_metadata = unserialize($videojs_metadata['metadata']);
+			//print_r($video_metadata);
+			$exif = array_merge($exif, $video_metadata);
+		}
+		if (!isset($exif['playtime_seconds']))
+		{
+			$warnings[] = "Unable to gather 'playtime_seconds' metadata, you may need to parse metadata first.";
+		}
+	}
+	//print_r($exif);
 
         /* Create poster */
         if ($sync_options['poster'])
@@ -121,10 +145,11 @@ while ($row = pwg_db_fetch_assoc($result))
             	continue;
             }
             $output_dir = dirname($row['path']) . '/pwg_representative/';
+            //$output_dir = PWG_DERIVATIVE_DIR . dirname($row['path']) . '/pwg_representative/';
             $in = $filename;
             $out = $output_dir.$file_wo_ext['filename'].'.'.$sync_options['output'];
             /* Report it */
-            isset($sync_options['batch_manager']) ? $infos[] = $filename. ' poster: '.$out : '';
+            $infos[] = $filename. ' poster: '.$out;
             $sync_arr['poster'] = $out;
 
             if (!is_dir($output_dir))
@@ -135,7 +160,7 @@ while ($row = pwg_db_fetch_assoc($result))
             {
                 $errors[] = "Directory ".$output_dir." has wrong permission";
             }
-            else if ($sync_options['postersec'] and !$sync_options['simulate'])
+            else if (isset($exif['playtime_seconds']) and $sync_options['postersec'] and !$sync_options['simulate'])
             {/* We really want to create the poster */
 
 		/* Delete any previous poster, avoid duplication on different output format */
@@ -149,7 +174,7 @@ while ($row = pwg_db_fetch_assoc($result))
 			}
 		}
 		/* if video is shorter fallback to last second */
-                if (isset($exif['playtime_seconds']) and $sync_options['postersec'] > $exif['playtime_seconds'])
+                if ($sync_options['postersec'] > $exif['playtime_seconds'])
                 {
                     $warnings[] = "Movie ". $filename ." is shorter than ". $sync_options['postersec'] ." secondes, fallback to ". $exif['playtime_seconds'] ." secondes";
                     $sync_options['postersec'] = (int)$exif['playtime_seconds'];
@@ -176,7 +201,7 @@ while ($row = pwg_db_fetch_assoc($result))
 
 					/* Delete any previous square or thumbnail or small images, avoid duplication on different output format */
 					/* They are now out of date, thumbnail are autogenerate by Piwigo on request */
-					$idata = "_data/i/".dirname($row['path']).'/pwg_representative/';
+					$idata = PWG_DERIVATIVE_DIR . dirname($row['path']) . '/pwg_representative/';
 					$extensions = array('-th.jpg', '-sq.jpg', '-th.png', '-sq.png', '-sm.png', '-sm.png');
 					foreach ($extensions as $extension)
 					{
@@ -191,7 +216,8 @@ while ($row = pwg_db_fetch_assoc($result))
 					if($sync_options['posteroverlay'])
 					{
 						add_movie_frame($out);
-						isset($sync_options['batch_manager']) ? $infos[] = $filename. ' overlay: '.$out : '';
+						/* Report it */
+						$infos[] = $filename. ' overlay: '.$out;
 						$sync_arr['overlay'] = "add movie frame on ".$out;
 					}
 				}
@@ -211,6 +237,7 @@ while ($row = pwg_db_fetch_assoc($result))
 			continue;
 		}
                 $output_dir = dirname($row['path']) . '/pwg_representative/';
+                //$output_dir = PWG_DERIVATIVE_DIR . dirname($row['path']) . '/pwg_representative/';
 
                 if (!is_dir($output_dir) or !is_writable($output_dir))
                 {
@@ -249,7 +276,7 @@ while ($row = pwg_db_fetch_assoc($result))
 			$thumbs++;
 			$out = $output_dir.$file_wo_ext['filename']."-th_".$second.'.'.$sync_options['output'];
 			/* Report it */
-			isset($sync_options['batch_manager']) ? $infos[] = $filename. ' thumbnail: '.$second.' seconds '.$out : '';
+			$infos[] = $filename. ' thumbnail: '.$second.' seconds '.$out;
 			$sync_arr['thumbnail'][] = $second.' seconds '.$out;
                         /* Lets do it , default output to JPG */
                         $ffmpeg = $sync_options['ffmpeg'] ." -ss ".$second." -i \"".$in."\" -vcodec mjpeg -vframes 1 -an -f rawvideo -vf ".$scale." -y \"".$out. "\"";
@@ -267,11 +294,9 @@ while ($row = pwg_db_fetch_assoc($result))
                 }
             }
         } /* End thumbnails */
-        if (!isset($sync_options['batch_manager']))
-        {
-            $infos[] = $sync_arr;
-        }
-    }
+	/* report for custum page_info */
+        $sync_infos[] = $sync_arr;
+   }
 }
 
 /***************
